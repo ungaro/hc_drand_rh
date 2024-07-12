@@ -1,0 +1,160 @@
+/* Interface */
+#define function unsafeGetRandomness(uint256) view returns (uint256)
+#define function getRandomness(uint256) view returns (uint256)
+#define function isRandomnessAvailable(uint256) view returns (bool)
+
+/* Constants */
+#define constant DELAY = 0x0a
+
+/* Storage Slots */
+#define constant DRAND_ORACLE_SLOT = FREE_STORAGE_POINTER()
+#define constant SEQUENCER_RANDOM_ORACLE_SLOT = FREE_STORAGE_POINTER()
+
+/* Errors */
+#define error RandomnessNotAvailable()
+
+/* Constructor */
+#define macro CONSTRUCTOR() = takes(0) returns(0) {
+    // Store DrandOracle address
+    0x04 calldataload       // load DrandOracle address
+    [DRAND_ORACLE_SLOT] sstore
+
+    // Store SequencerRandomOracle address
+    0x24 calldataload       // load SequencerRandomOracle address
+    [SEQUENCER_RANDOM_ORACLE_SLOT] sstore
+}
+
+#define macro UNSAFE_GET_RANDOMNESS() = takes(0) returns(0) {
+    0x04 calldataload   // Load timestamp T
+    dup1                // Duplicate T
+    [DELAY] sub         // T - DELAY
+
+    // Call DrandOracle.unsafeGetDrand
+    [DRAND_ORACLE_SLOT] sload  // Load DrandOracle address
+    0x6a76f5bd           // Function selector for unsafeGetDrand
+    0x00 mstore          // Store selector at 0x00
+    0x04 mstore          // Store T - DELAY at 0x04
+    0x24 0x00            // Args offset and length
+    0x00                 // Return data offset
+    0x20                 // Return data length
+    dup6                 // DrandOracle address
+    gas                  // Gas
+    staticcall           // Call DrandOracle.unsafeGetDrand
+
+    // Call SequencerRandomOracle.unsafeGetSequencerRandom
+    [SEQUENCER_RANDOM_ORACLE_SLOT] sload  // Load SequencerRandomOracle address
+    0x5d1d0955           // Function selector for unsafeGetSequencerRandom
+    0x20 mstore          // Store selector at 0x20
+    0x04 calldataload    // Load original timestamp T
+    0x24 mstore          // Store T at 0x24
+    0x24 0x20            // Args offset and length
+    0x20                 // Return data offset
+    0x20                 // Return data length
+    dup6                 // SequencerRandomOracle address
+    gas                  // Gas
+    staticcall           // Call SequencerRandomOracle.unsafeGetSequencerRandom
+
+    // Combine results
+    0x00 mload           // Load Drand value
+    0x20 mload           // Load Sequencer value
+    or iszero return_zero jumpi  // If either value is 0, return 0
+
+    // Hash combined values
+    0x00 mstore          // Store Drand value at 0x00
+    0x20 mstore          // Store Sequencer value at 0x20
+    0x40 0x00 sha3       // Hash the combined values
+    0x00 mstore          // Store the result at 0x00
+    0x20 0x00 return     // Return the result
+
+return_zero:
+    0x00 0x00 mstore     // Store 0 at 0x00
+    0x20 0x00 return     // Return 0
+}
+
+
+#define macro GET_RANDOMNESS() = takes(0) returns(0) {
+    0x04 calldataload   // Load timestamp T
+    dup1                // [T, T]
+    UNSAFE_GET_RANDOMNESS()  // Call UNSAFE_GET_RANDOMNESS
+    dup1                // [result, result, T]
+    iszero error jumpi  // If result is 0, jump to error
+
+    // Return result
+    0x00 mstore         // Store result at 0x00
+    0x20 0x00 return    // Return the result
+
+error:
+    __ERROR(RandomnessNotAvailable)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro RANDOMNESS_NOT_AVAILABLE() = takes(0) returns(0) {
+    __ERROR(RandomnessNotAvailable)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+
+
+#define macro IS_RANDOMNESS_AVAILABLE() = takes(0) returns(0) {
+    0x04 calldataload   // Load timestamp T
+    dup1                // Duplicate T
+    [DELAY] sub         // T - DELAY
+
+    // Call DrandOracle.isDrandAvailable
+    [DRAND_ORACLE_SLOT] sload  // Load DrandOracle address
+    0x1f28f12e           // Function selector for isDrandAvailable
+    0x00 mstore          // Store selector at 0x00
+    0x04 mstore          // Store T - DELAY at 0x04
+    0x24 0x00            // Args offset and length
+    0x00                 // Return data offset
+    0x20                 // Return data length
+    dup6                 // DrandOracle address
+    gas                  // Gas
+    staticcall           // Call DrandOracle.isDrandAvailable
+
+    // Check DrandOracle result
+    0x00 mload           // Load result
+    iszero not_available jumpi  // If false, jump to not_available
+
+    // Call SequencerRandomOracle.isSequencerRandomAvailable
+    [SEQUENCER_RANDOM_ORACLE_SLOT] sload  // Load SequencerRandomOracle address
+    0x7a9aac02           // Function selector for isSequencerRandomAvailable
+    0x00 mstore          // Store selector at 0x00
+    0x04 calldataload    // Load original timestamp T
+    0x04 mstore          // Store T at 0x04
+    0x24 0x00            // Args offset and length
+    0x00                 // Return data offset
+    0x20                 // Return data length
+    dup6                 // SequencerRandomOracle address
+    gas                  // Gas
+    staticcall           // Call SequencerRandomOracle.isSequencerRandomAvailable
+
+    // Return SequencerRandomOracle result
+    0x00 mload           // Load result
+    0x00 mstore          // Store result at 0x00
+    0x20 0x00 return     // Return the result
+
+not_available:
+    0x00 0x00 mstore     // Store false (0) at 0x00
+    0x20 0x00 return     // Return false
+}
+
+
+#define macro MAIN() = takes(0) returns(0) {
+    // Identify which function is being called
+    0x00 calldataload 0xE0 shr
+    dup1 0xea6ae42a eq unsafe_get_randomness jumpi
+    dup1 0x453f4f62 eq get_randomness jumpi
+    dup1 0xbacf23c4 eq is_randomness_available jumpi
+
+    0x00 0x00 revert
+
+unsafe_get_randomness:
+    UNSAFE_GET_RANDOMNESS()
+get_randomness:
+    GET_RANDOMNESS()
+is_randomness_available:
+    IS_RANDOMNESS_AVAILABLE()
+}

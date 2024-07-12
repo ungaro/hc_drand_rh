@@ -1,0 +1,239 @@
+/* Interface */
+#define function unsafeGetSequencerRandom(uint256) view returns (uint256)
+#define function isSequencerRandomAvailable(uint256) view returns (bool)
+#define function getSequencerRandom(uint256) view returns (uint256)
+#define function postCommitment(uint256,bytes32) nonpayable returns ()
+#define function reveal(uint256,uint256) nonpayable returns ()
+#define function getLastRevealedT() view returns (uint256)
+#define function getCommitment(uint256) view returns (bytes32,bool,uint256)
+
+/* Storage Slots */
+#define constant OWNER_SLOT = FREE_STORAGE_POINTER()
+#define constant LAST_REVEALED_T_SLOT = FREE_STORAGE_POINTER()
+
+/* Constants */
+#define constant SEQUENCER_TIMEOUT = 0x0a
+#define constant PRECOMMIT_DELAY = 0x0a
+
+/* Events */
+#define event CommitmentPosted(uint256 indexed T, bytes32 commitment)
+#define event ValueRevealed(uint256 indexed T, uint256 value)
+#define event RevealError(uint256 indexed T, string reason)
+
+
+/* Errors */
+#define error NotOwner()
+#define error CommitmentMustBePostedInAdvance()
+#define error CommitmentAlreadyPosted()
+#define error NoCommitmentPosted()
+#define error AlreadyRevealed()
+#define error MustRevealInOrder()
+#define error RevealTimeoutExpired()
+#define error SequencerRandomValueNotAvailable()
+
+/* Error Macros */
+#define macro NOT_OWNER() = takes(0) returns(0) {
+    __ERROR(NotOwner)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro COMMITMENT_MUST_BE_POSTED_IN_ADVANCE() = takes(0) returns(0) {
+    __ERROR(CommitmentMustBePostedInAdvance)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro COMMITMENT_ALREADY_POSTED() = takes(0) returns(0) {
+    __ERROR(CommitmentAlreadyPosted)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro NO_COMMITMENT_POSTED() = takes(0) returns(0) {
+    __ERROR(NoCommitmentPosted)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro ALREADY_REVEALED() = takes(0) returns(0) {
+    __ERROR(AlreadyRevealed)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro MUST_REVEAL_IN_ORDER() = takes(0) returns(0) {
+    __ERROR(MustRevealInOrder)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro REVEAL_TIMEOUT_EXPIRED() = takes(0) returns(0) {
+    __ERROR(RevealTimeoutExpired)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro SEQUENCER_RANDOM_VALUE_NOT_AVAILABLE() = takes(0) returns(0) {
+    __ERROR(SequencerRandomValueNotAvailable)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+
+
+/* Macros */
+#define macro CONSTRUCTOR() = takes(0) returns(0) {
+    0x20 calldataload   // Load the owner address from constructor arguments
+    [OWNER_SLOT] sstore // Store the owner address
+}
+
+#define macro ONLY_OWNER() = takes(0) returns(0) {
+    caller                 // Get the caller address
+    [OWNER_SLOT] sload     // Load the owner address
+    eq                     // Check if caller == owner
+    is_owner jumpi         // Jump if caller is owner
+    __ERROR(NotOwner)      // Load NotOwner error signature
+    0x00 mstore            // Store error signature at 0x00
+    0x04 0x00 revert       // Revert with custom error
+    is_owner:              // Continue execution if owner
+}
+
+#define macro UNSAFE_GET_SEQUENCER_RANDOM() = takes(0) returns(0) {
+    0x04 calldataload       // load T
+    dup1                    // [T, T]
+    0x00 mstore             // store T at 0x00
+    0x20 0x00 sha3          // compute storage slot for commitment
+    sload                   // load commitment
+    dup1                    // [commitment, commitment]
+    0x00 eq is_zero jumpi   // if commitment is 0, jump to is_zero
+
+    // commitment exists, check if revealed
+    0x01 add sload          // load revealed flag
+    iszero not_revealed jumpi
+
+    // revealed, return the value
+    0x02 add sload          // load value
+    0x00 mstore             // store value at 0x00
+    0x20 0x00 return        // return value
+
+not_revealed:
+    // not revealed, return hash of commitment
+    0x00 mstore             // store commitment at 0x00
+    0x20 0x00 sha3          // compute hash
+    0x00 mstore             // store hash at 0x00
+    0x20 0x00 return        // return hash
+
+is_zero:
+    // no commitment, return 0
+    0x00 0x00 mstore        // store 0 at 0x00
+    0x20 0x00 return        // return 0
+}
+
+#define macro IS_SEQUENCER_RANDOM_AVAILABLE() = takes(0) returns(0) {
+    0x04 calldataload       // load T
+    0x00 mstore             // store T at 0x00
+    0x20 0x00 sha3          // compute storage slot for commitment
+    sload                   // load commitment
+    iszero iszero           // check if commitment is non-zero
+    0x00 mstore             // store result at 0x00
+    0x20 0x00 return        // return result
+}
+
+#define macro GET_SEQUENCER_RANDOM() = takes(0) returns(0) {
+    UNSAFE_GET_SEQUENCER_RANDOM()
+    0x00 mload              // load result
+    iszero error jumpi      // if result is 0, jump to error
+    0x20 0x00 return        // return result
+error:
+    SEQUENCER_RANDOM_VALUE_NOT_AVAILABLE()
+}
+
+#define macro POST_COMMITMENT() = takes(0) returns(0) {
+    ONLY_OWNER()
+    timestamp               // [timestamp]
+    [PRECOMMIT_DELAY] add   // [timestamp + PRECOMMIT_DELAY]
+    0x04 calldataload       // [T, timestamp + PRECOMMIT_DELAY]
+    gt error jumpi          // if T <= timestamp + PRECOMMIT_DELAY, jump to error
+
+    // Check if commitment already exists
+    0x04 calldataload       // [T]
+    0x00 mstore             // store T at 0x00
+    0x20 0x00 sha3          // compute storage slot for commitment
+    dup1                    // [slot, slot]
+    sload                   // [existing_commitment, slot]
+    iszero continue jumpi   // if existing_commitment is 0, continue
+    COMMITMENT_ALREADY_POSTED()
+
+continue:
+    0x24 calldataload       // [commitment, slot]
+    swap1                   // [slot, commitment]
+    sstore                  // store commitment
+
+    // Emit CommitmentPosted event
+    0x04 calldataload       // [T]
+    0x24 calldataload       // [commitment, T]
+    __EVENT_HASH(CommitmentPosted)
+    0x00 0x00 log3
+
+    0x00 0x00 return        // return
+
+error:
+    COMMITMENT_MUST_BE_POSTED_IN_ADVANCE()
+}
+
+#define macro REVEAL() = takes(0) returns(0) {
+    // Implementation for reveal function
+    // This will be a complex macro involving multiple checks and state changes
+    // Implement the logic step by step, following the Solidity implementation
+}
+
+#define macro GET_LAST_REVEALED_T() = takes(0) returns(0) {
+    [LAST_REVEALED_T_SLOT] sload  // load lastRevealedT
+    0x00 mstore                   // store at memory position 0
+    0x20 0x00 return              // return 32 bytes from memory
+}
+
+#define macro GET_COMMITMENT() = takes(0) returns(0) {
+    0x04 calldataload       // load T
+    0x00 mstore             // store T at 0x00
+    0x20 0x00 sha3          // compute storage slot for commitment
+    dup1 sload              // [commitment, slot]
+    0x00 mstore             // store commitment at 0x00
+    0x01 add                // [slot + 1]
+    dup1 sload              // [revealed, slot + 1]
+    0x20 mstore             // store revealed at 0x20
+    0x01 add                // [slot + 2]
+    sload                   // [value]
+    0x40 mstore             // store value at 0x40
+    0x60 0x00 return        // return 96 bytes from memory
+}
+
+#define macro MAIN() = takes(0) returns(0) {
+    // Identify which function is being called
+    0x00 calldataload 0xE0 shr
+    dup1 0xaa25d14c eq unsafe_get_sequencer_random jumpi
+    dup1 0xb0bccf14 eq is_sequencer_random_available jumpi
+    dup1 0x8de91000 eq get_sequencer_random jumpi
+    dup1 0x1d539681 eq post_commitment jumpi
+    dup1 0x9348cef7 eq reveal jumpi
+    dup1 0xddec8bce eq get_last_revealed_t jumpi
+    dup1 0x69bcdb7d eq get_commitment jumpi
+
+    0x00 0x00 revert
+
+unsafe_get_sequencer_random:
+    UNSAFE_GET_SEQUENCER_RANDOM()
+is_sequencer_random_available:
+    IS_SEQUENCER_RANDOM_AVAILABLE()
+get_sequencer_random:
+    GET_SEQUENCER_RANDOM()
+post_commitment:
+    POST_COMMITMENT()
+reveal:
+    REVEAL()
+get_last_revealed_t:
+    GET_LAST_REVEALED_T()
+get_commitment:
+    GET_COMMITMENT()
+}

@@ -1,0 +1,231 @@
+#include "huffmate/utils/Errors.huff"
+
+
+
+/* Interface */
+#define function unsafeGetDrand(uint256) view returns (uint256)
+#define function getDrand(uint256) view returns (uint256)
+#define function isDrandAvailable(uint256) view returns (bool)
+#define function setDrand(uint256,uint256) nonpayable returns ()
+
+/* Storage Slots */
+#define constant OWNER_SLOT = FREE_STORAGE_POINTER()
+/*
+#define macro OWNER_LOCATION = takes(0) returns(1) {
+	0x01
+}
+*/
+
+/* Constants */
+#define constant DRAND_TIMEOUT = 0x0a
+
+/* Errors */
+
+#define error NotOwner(string)
+#define error DrandValueNotAvailable(string)
+#define error DrandBackfillTimeoutExpired(string)
+#define error DrandValueAlreadySet(string)
+
+
+
+
+
+/* Error Macros */
+#define macro NOT_OWNER() = takes(0) returns(0) {
+    __ERROR(NotOwner)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro DRAND_VALUE_NOT_AVAILABLE() = takes(0) returns(0) {
+    __ERROR(DrandValueNotAvailable)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro DRAND_BACKFILL_TIMEOUT_EXPIRED() = takes(0) returns(0) {
+    __ERROR(DrandBackfillTimeoutExpired)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+#define macro DRAND_VALUE_ALREADY_SET() = takes(0) returns(0) {
+    __ERROR(DrandValueAlreadySet)
+    0x00 mstore
+    0x04 0x00 revert
+}
+
+
+
+/* Constructor */
+/*
+#define macro CONSTRUCTOR() = takes(0) returns(0) {
+    0x20 calldataload   // Load the owner address from constructor arguments
+    [OWNER_SLOT] sstore // Store the owner address
+    
+    // Log the owner address
+    0x00 mstore
+    0x20 0x00 log1
+}
+x
+
+
+#define macro CONSTRUCTOR() = takes(0) returns(0) {
+    0x20 calldataload   // Load the owner address from constructor arguments
+    dup1                // Duplicate the address for logging
+    [OWNER_SLOT] sstore // Store the owner address
+    
+    // Log the owner address
+    0x00 mstore
+    __EVENT_HASH(OwnerSet)
+    0x20 0x00 log2
+}
+*/
+#define macro CONSTRUCTOR() = takes(0) returns(0) {
+    //0x20 calldataload   // Load the owner address from constructor arguments
+    //[OWNER_SLOT] sstore // Store the owner address
+	//caller OWNER_LOCATION() sstore
+
+    caller [OWNER_SLOT] sstore
+
+    //0x00 [OWNER_SLOT] log1
+
+}
+
+#define event OwnerSet(address indexed owner)
+
+
+#define macro ONLY_OWNER() = takes(0) returns(0) {
+    caller                     // [caller]
+    [OWNER_SLOT] sload         // [owner, caller]
+//    OWNER_LOCATION() sload         // [owner, caller]
+    eq                         // [owner == caller]
+    is_owner jumpi             // Jump if caller is owner
+    // If we're here, caller is not owner
+    0x00 0x00 revert           // Revert with no data
+    is_owner:                  // Continue execution if owner
+}
+
+
+#define macro UNSAFE_GET_DRAND() = takes(0) returns(0) {
+    0x04 calldataload   // Load timestamp from input
+    0x00 mstore         // Store timestamp at 0x00
+    0x20 0x00 sha3      // Compute storage slot
+    sload               // Load value from storage
+    0x00 mstore         // Store result in memory
+    0x20 0x00 return    // Return 32 bytes from memory
+}
+
+
+
+#define macro IS_DRAND_AVAILABLE() = takes(0) returns(0) {
+    0x04 calldataload   // Load timestamp T from input
+    dup1                // Duplicate T
+    0x00 mstore         // Store T at 0x00
+    0x20 0x00 sha3      // Compute storage slot
+    sload               // Load value from storage
+    iszero iszero       // Check if value is non-zero
+    swap1               // Swap T and result
+    timestamp           // Get current timestamp
+    [DRAND_TIMEOUT] add // Add DRAND_TIMEOUT to current timestamp
+    gt                  // Check if T + DRAND_TIMEOUT > current timestamp
+    or                  // Combine both conditions
+    0x00 mstore         // Store result in memory
+    0x20 0x00 return    // Return 32 bytes from memory
+}
+
+
+
+#define macro SET_DRAND() = takes(0) returns(0) {
+    ONLY_OWNER()
+    0x04 calldataload   // Load timestamp T
+    dup1                // [T, T]
+    [DRAND_TIMEOUT] add // [T + DRAND_TIMEOUT, T]
+    timestamp           // [current_timestamp, T + DRAND_TIMEOUT, T]
+    gt                  // [current_timestamp > T + DRAND_TIMEOUT, T]
+    
+    // "Drand backfill timeout expired"
+    __RIGHTPAD(0x4472616E64206261636B66696C6C2074696D656F757420657870697265640000)
+    0x1E                // [0x1E, "Drand backfill timeout expired", current_timestamp > T + DRAND_TIMEOUT, T]
+    swap2               // [current_timestamp > T + DRAND_TIMEOUT, 0x1E, "Drand backfill timeout expired", T]
+    iszero              // [!(current_timestamp > T + DRAND_TIMEOUT), 0x1E, "Drand backfill timeout expired", T]
+    REQUIRE()           // [T]
+
+    0x00 mstore         // Store T at 0x00
+    0x20 0x00 sha3      // Compute storage slot
+    dup1                // Duplicate storage slot
+    sload               // Load existing value
+    
+    // "Drand value already set"
+    __RIGHTPAD(0x4472616E642076616C756520616C7265616479207365740000000000000000)
+    0x17                // [0x17, "Drand value already set", existing_value, storage_slot]
+    swap2               // [existing_value, 0x17, "Drand value already set", storage_slot]
+    iszero              // [existing_value == 0, 0x17, "Drand value already set", storage_slot]
+    REQUIRE()           // [storage_slot]
+
+    0x24 calldataload   // Load value
+    swap1               // Swap storage slot and value
+    sstore              // Store value at computed slot
+    0x00 0x00 return    // Return successfully
+}
+
+#define macro GET_DRAND() = takes(0) returns(0) {
+    0x04 calldataload   // Load timestamp from input
+    0x00 mstore         // Store timestamp at 0x00
+    0x20 0x00 sha3      // Compute storage slot
+    sload               // Load value from storage
+    dup1                // Duplicate value
+    
+    // "Drand value not available"
+    __RIGHTPAD(0x4472616E642076616C7565206E6F7420617661696C61626C650000000000)
+    0x1A                // [0x1A, "Drand value not available", value, value]
+    swap2               // [value, 0x1A, "Drand value not available", value]
+    iszero              // [value == 0, 0x1A, "Drand value not available", value]
+    REQUIRE()           // [value]
+
+    0x00 mstore         // Store result in memory
+    0x20 0x00 return    // Return 32 bytes from memory
+}
+
+
+
+#define macro MAIN() = takes(0) returns(0) {
+    // Identify which function is being called
+    0x00 calldataload 0xE0 shr
+    dup1 0x88722afc eq unsafe_get_drand jumpi
+    dup1 0x74dc0fc3 eq get_drand jumpi
+    dup1 0x079ea2ed eq is_drand_available jumpi
+    dup1 0xcc16d7bf eq set_drand jumpi
+
+    0x00 0x00 revert
+
+    unsafe_get_drand:
+        UNSAFE_GET_DRAND()
+    get_drand:
+        GET_DRAND()
+    is_drand_available:
+        IS_DRAND_AVAILABLE()
+    set_drand:
+        SET_DRAND()
+}
+
+
+
+
+
+/*
+#define macro SET_DRAND() = takes(0) returns(0) {
+    ONLY_OWNER()
+    0x04 calldataload   // Load timestamp T
+    timestamp           // Get current timestamp
+    dup2                // [T, timestamp, T]
+    [DRAND_TIMEOUT] add // [T, timestamp, T + DRAND_TIMEOUT]
+    gt                  // [timestamp > T + DRAND_TIMEOUT, T]
+    
+    // "Drand backfill timeout expired"
+    __RIGHTPAD(0x4472616E64206261636B66696C6C2074696D656F757420657870697265640000)
+    0x1E                // [0x1E, "Drand backfill timeout expired", timestamp > T + DRAND_TIMEOUT, T]
+    swap2               // [timestamp > T + DRAND_TIMEOUT, 0x1E, "Drand backfill timeout expired", T]
+    iszero              // [!(timestamp > T + DRAND_TIMEOUT), 0x1E, "Drand backfill timeout expired", T]
+    REQUIRE()           // [T]
+*/
