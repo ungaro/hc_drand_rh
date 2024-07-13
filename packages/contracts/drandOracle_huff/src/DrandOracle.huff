@@ -9,20 +9,14 @@
 /* Storage Slots */
 #define constant OWNER_SLOT = FREE_STORAGE_POINTER()
 
-
 /* Constants */
 #define constant DRAND_TIMEOUT = 0x0a
 
 /* Errors */
-
 #define error NotOwner(string)
 #define error DrandValueNotAvailable(string)
 #define error DrandBackfillTimeoutExpired(string)
 #define error DrandValueAlreadySet(string)
-
-
-
-
 
 /* Error Macros */
 #define macro NOT_OWNER() = takes(0) returns(0) {
@@ -48,8 +42,6 @@
     0x00 mstore
     0x04 0x00 revert
 }
-
-
 
 #define macro CONSTRUCTOR() = takes(0) returns(0) {
     caller [OWNER_SLOT] sstore

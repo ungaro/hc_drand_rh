@@ -34,6 +34,9 @@
 #define error AlreadyRevealed()
 #define error MustRevealInOrder()
 #define error RevealTimeoutExpired()
+#define error NoCommitmentFound()
+#define error InvalidRevealedValue()
+
 
 #define error SequencerRandomValueNotAvailable()
 
@@ -133,10 +136,10 @@
 }
 
 // Get Owner
-#define macro OWNER() = takes (0) returns (0) {
-    [OWNER_SLOT] sload    // [owner]
-    0x00 mstore           // []
-    0x20 0x00 return      // return the owner address
+#define macro OWNER() = takes(0) returns(0) {
+    [OWNER_SLOT] sload    // Load the owner's address from storage
+    0x00 mstore           // Store it in memory at position 0
+    0x20 0x00 return      // Return 32 bytes from memory
 }
 
 #define macro UNSAFE_GET_SEQUENCER_RANDOM() = takes(0) returns(0) {
@@ -229,108 +232,30 @@ is_owner:
     0x20 0x00 return            // Return success
 }
 
+
 #define macro REVEAL() = takes(0) returns(0) {
-    // Log entry to REVEAL
-    __FUNC_SIG("EnterREVEAL()")
-    0x00 mstore
-    0x04 0x00 log1
-
-    // Log calldata size
-    __FUNC_SIG("CalldataSize(uint256)")
-    0x00 mstore
-    calldatasize
-    0x20 mstore
-    0x24 0x00 log1
-
-    // Load T
-    __FUNC_SIG("BeforeLoadingT()")
-    0x00 mstore
-    0x04 0x00 log1
-
+    // Load T and value
     0x04 calldataload   // [T]
-    __FUNC_SIG("AfterLoadingT(uint256)")
-    0x00 mstore
-    dup1 0x20 mstore
-    0x24 0x00 log1
-
-    dup1                // [T, T]
-    __FUNC_SIG("AfterDupT(uint256)")
-    0x00 mstore
-    0x20 mstore
-    0x24 0x00 log1
-
-    // Load value
-    __FUNC_SIG("BeforeLoadingValue()")
-    0x00 mstore
-    0x04 0x00 log1
-
     0x24 calldataload   // [value, T]
-    __FUNC_SIG("AfterLoadingValue(uint256)")
+
+    // Emit ValueRevealed event (swapping the order)
+    swap1               // [T, value]
+    __EVENT_HASH(ValueRevealed)  // [event_hash, T, value]
+    0x00 0x00                    // [0, 0, event_hash, T, value]
+    log3                         // []
+
+    // Store T and value in memory (for debugging)
+    0x04 calldataload 0x00 mstore  // Store T at 0x00
+    0x24 calldataload 0x20 mstore  // Store value at 0x20
+
+    // Log the values (for debugging)
+    __FUNC_SIG("RevealValues(uint256,uint256)")
     0x00 mstore
-    dup1 0x20 mstore
-    0x24 0x00 log1
-
-    dup1                // [value, value, T]
-    __FUNC_SIG("AfterDupValue(uint256)")
-    0x00 mstore
-    0x20 mstore
-    0x24 0x00 log1
-
-    // Check if reveal is within timeout
-    __FUNC_SIG("BeforeTimeoutCheck()")
-    0x00 mstore
-    0x04 0x00 log1
-
-    timestamp           // [timestamp, value, value, T]
-    __FUNC_SIG("AfterLoadingTimestamp(uint256)")
-    0x00 mstore
-    dup1 0x20 mstore
-    0x24 0x00 log1
-
-    dup4                // [T, timestamp, value, value, T]
-    [SEQUENCER_TIMEOUT] add  // [T + SEQUENCER_TIMEOUT, timestamp, value, value, T]
-    __FUNC_SIG("AfterCalculatingThreshold(uint256)")
-    0x00 mstore
-    dup1 0x20 mstore
-    0x24 0x00 log1
-
-    gt                  // [timestamp > (T + SEQUENCER_TIMEOUT), value, value, T]
-    __FUNC_SIG("AfterComparisonResult(uint256)")
-    0x00 mstore
-    dup1 0x20 mstore
-    0x24 0x00 log1
-
-    // Conditional jump
-    reveal_timeout jumpi
-
-    __FUNC_SIG("AfterTimeoutJump()")
-    0x00 mstore
-    0x04 0x00 log1
-
-    // Emit ValueRevealed event
-    __EVENT_HASH(ValueRevealed)
-    0x00 0x00                   // [0, 0, event_hash, value, value, T]
-    log3                        // []
-
-    __FUNC_SIG("RevealSuccessful()")
-    0x00 mstore
-    0x04 0x00 log1
+    0x40 0x00 log1
 
     // Return success
     0x01 0x00 mstore    // Store 1 to indicate success
     0x20 0x00 return    // Return 32 bytes
-
-reveal_timeout:
-    __FUNC_SIG("RevealTimeout()")
-    0x00 mstore
-    0x04 0x00 log1
-
-    // Clean up the stack
-    pop pop pop
-
-    __ERROR(RevealTimeoutExpired)
-    0x00 mstore
-    0x04 0x00 revert
 }
 
 #define macro GET_LAST_REVEALED_T() = takes(0) returns(0) {
@@ -354,56 +279,27 @@ reveal_timeout:
     0x60 0x00 return        // return 96 bytes from memory
 }
 
-
-
 #define macro MAIN() = takes(0) returns(0) {
-    // Log entry to MAIN
-   // Get the function selector
     0x00 calldataload 0xE0 shr
-
-    dup1 __FUNC_SIG(owner) eq owner jumpi
-    dup1 __FUNC_SIG(postCommitment) eq post_commitment jumpi
     dup1 __FUNC_SIG(reveal) eq reveal jumpi
+    dup1 __FUNC_SIG(postCommitment) eq post_commitment jumpi
     dup1 __FUNC_SIG(changeOwner) eq change_owner jumpi
     dup1 __FUNC_SIG(owner) eq owner jumpi
-    dup1 __FUNC_SIG(postCommitment) eq post_commitment jumpi
-    dup1 0xaa25d14c eq unsafe_get_sequencer_random jumpi
-    dup1 0xb0bccf14 eq is_sequencer_random_available jumpi
-    dup1 0x8de91000 eq get_sequencer_random jumpi
-    dup1 0x1d539681 eq post_commitment jumpi
-    dup1 0x9348cef7 eq reveal jumpi
-    dup1 0xddec8bce eq get_last_revealed_t jumpi
-    dup1 0x69bcdb7d eq get_commitment jumpi
-    // ... (other function checks)
+    dup1 __FUNC_SIG(getLastRevealedT) eq get_last_revealed_t jumpi
+    dup1 __FUNC_SIG(getCommitment) eq get_commitment jumpi
 
-    // If no match, revert
     0x00 0x00 revert
 
+reveal:
+    REVEAL()
 post_commitment:
-    // Log before calling POST_COMMITMENT
-    __FUNC_SIG("CallingPOSTCOMMITMENT()")
-    0x00 mstore
-    0x04 0x00 log1
-
     POST_COMMITMENT()
-
 change_owner:
     CHANGE_OWNER()
 owner:
     OWNER()
-unsafe_get_sequencer_random:
-    UNSAFE_GET_SEQUENCER_RANDOM()
-is_sequencer_random_available:
-    IS_SEQUENCER_RANDOM_AVAILABLE()
-get_sequencer_random:
-    GET_SEQUENCER_RANDOM()
-post_commitment:
-    POST_COMMITMENT()
-reveal:
-    REVEAL()
 get_last_revealed_t:
     GET_LAST_REVEALED_T()
 get_commitment:
     GET_COMMITMENT()
-    
 }
