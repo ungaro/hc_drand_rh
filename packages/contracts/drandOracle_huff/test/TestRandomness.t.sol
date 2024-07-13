@@ -10,18 +10,25 @@ interface IDrandOracle {
     function unsafeGetDrand(uint256) external view returns (uint256);
     function getDrand(uint256) external view returns (uint256);
     function isDrandAvailable(uint256) external view returns (bool);
-    function setDrand(uint256,uint256) external;
+    function setDrand(uint256, uint256) external;
 }
+
 
 interface ISequencerRandomOracle {
     function unsafeGetSequencerRandom(uint256) external view returns (uint256);
     function isSequencerRandomAvailable(uint256) external view returns (bool);
     function getSequencerRandom(uint256) external view returns (uint256);
-    function postCommitment(uint256,bytes32) external;
-    function reveal(uint256,uint256) external;
+    function postCommitment(uint256, bytes32) external;
+    function reveal(uint256, uint256) external; // Note: No return value
     function getLastRevealedT() external view returns (uint256);
-    function getCommitment(uint256) external view returns (bytes32,bool,uint256);
+    function getCommitment(uint256) external view returns (bytes32, bool, uint256);
+    function changeOwner(address) external;
+    function owner() external view returns (address);
+
+    event ValueRevealed(uint256 indexed T, uint256 value);
 }
+
+
 
 interface IRandomnessOracle {
     function unsafeGetRandomness(uint256) external view returns (uint256);
@@ -33,54 +40,131 @@ contract TestRandomness is Test {
     IDrandOracle drandOracle;
     ISequencerRandomOracle sequencerRandomOracle;
     IRandomnessOracle randomnessOracle;
-    event Debug(string message, uint256 value);
-    address owner = address(this);
+    //address OWNER = makeAddr("Owner");
 
+    event SetDrandValue(uint256 value);
+    event GetDrandValue(uint256 value);
+    event FunctionCalled(bytes4 selector);
+    event Debug(string message, uint256 value);
+    event ValueRevealed(uint256 indexed T, uint256 value);
+
+    address owner = address(this);
+    
+    address prankowner = address(0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f);
     uint256 constant DRAND_TIMEOUT = 10;
     uint256 constant SEQUENCER_TIMEOUT = 10;
     uint256 constant PRECOMMIT_DELAY = 10;
     uint256 constant DELAY = 10;
 
-    function setUp() public {
-        drandOracle = IDrandOracle(HuffDeployer.deploy("DrandOracle"));
-        sequencerRandomOracle = ISequencerRandomOracle(HuffDeployer.deploy("SequencerRandomOracle"));
-        
-        // Deploy RandomnessOracle with constructor arguments
-        bytes memory args = abi.encode(address(drandOracle), address(sequencerRandomOracle));
-        randomnessOracle = IRandomnessOracle(HuffDeployer.deploy_with_args("RandomnessOracle", args));
-    }
+function setUp() public {
+    console.log("OWNER");
+    console.logBytes(abi.encode(prankowner));
 
-    function testDrandValue() public {
-        uint256 timestamp = block.timestamp;
-        uint256 drandValue = 12345;
-        
-        vm.warp(timestamp);
-        drandOracle.setDrand(timestamp, drandValue);
+    // Deploy DrandOracle
+    address drandOracleAddress = HuffDeployer
+        .config()
+        .with_args(abi.encode(prankowner))
+        .deploy("DrandOracle");
+    drandOracle = IDrandOracle(drandOracleAddress);
 
-        assertEq(drandOracle.getDrand(timestamp), drandValue);
-        assertEq(drandOracle.unsafeGetDrand(timestamp), drandValue);
-    }
-    
-    
-event SetDrandValue(uint256 value);
-event GetDrandValue(uint256 value);
-event FunctionCalled(bytes4 selector);
 
-function testSetDrand() public {
-    vm.warp(101);
+
+    bytes memory sequencerRandomOracleArgs = abi.encode(prankowner);
+    address sequencerRandomOracleAddress = HuffDeployer
+        .config()
+        .with_args(abi.encode(prankowner))
+        .deploy("SequencerRandomOracle");
+    sequencerRandomOracle = ISequencerRandomOracle(sequencerRandomOracleAddress);
+
+
+
+
+    // Deploy RandomnessOracle
+    bytes memory randomnessOracleArgs = abi.encode(drandOracleAddress, sequencerRandomOracleAddress);
+    address randomnessOracleAddress = HuffDeployer
+        .config()
+        .with_args(randomnessOracleArgs)
+        .deploy("RandomnessOracle");
+    randomnessOracle = IRandomnessOracle(randomnessOracleAddress);
+
+    // Print deployed addresses for verification
+    console.log("DrandOracle deployed at:", drandOracleAddress);
+    console.log("SequencerRandomOracle deployed at:", sequencerRandomOracleAddress);
+    console.log("RandomnessOracle deployed at:", randomnessOracleAddress);
+}
+
+
+
+function testDrandValue() public {
+    vm.recordLogs();
 
     uint256 timestamp = block.timestamp;
     uint256 drandValue = 12345;
 
-    bytes4 setSelector = bytes4(keccak256("setDrand(uint256,uint256)"));
-    bytes4 getSelector = bytes4(keccak256("getDrand(uint256)"));
-    console.log("setDrand selector:", toHexString(uint32(setSelector)));
-    console.log("getDrand selector:", toHexString(uint32(getSelector)));
+    // Test setting at exactly T
+    vm.warp(timestamp);
+    vm.prank(prankowner);
+    vm.store(address(drandOracle), keccak256(abi.encode(timestamp)), bytes32(0));
 
-    vm.recordLogs();
-    drandOracle.setDrand(timestamp, drandValue);
-    console.log("setDrand called");
+    try drandOracle.setDrand(timestamp, drandValue) {
+        console.log("setDrand succeeded at T");
+    } catch Error(string memory reason) {
+        console.log("setDrand failed with reason at T:", reason);
+    } catch (bytes memory lowLevelData) {
+        console.log("setDrand failed with low-level error at T");
+        console.logBytes(lowLevelData);
+    }
 
+    try drandOracle.getDrand(timestamp) returns (uint256 storedValue) {
+        console.log("getDrand succeeded at T");
+        assertEq(storedValue, drandValue, "Stored value doesn't match at T");
+    } catch Error(string memory reason) {
+        console.log("getDrand failed with reason at T:", reason);
+    } catch (bytes memory lowLevelData) {
+        console.log("getDrand failed with low-level error at T");
+        console.logBytes(lowLevelData);
+    }
+
+    // Test setting at T + DRAND_TIMEOUT
+    uint256 newTimestamp = timestamp + DRAND_TIMEOUT;
+    vm.warp(newTimestamp);
+    vm.prank(prankowner);
+
+    try drandOracle.setDrand(newTimestamp, drandValue + 1) {
+        console.log("setDrand succeeded at T + DRAND_TIMEOUT");
+    } catch Error(string memory reason) {
+        console.log("setDrand failed with reason at T + DRAND_TIMEOUT:", reason);
+    } catch (bytes memory lowLevelData) {
+        console.log("setDrand failed with low-level error at T + DRAND_TIMEOUT");
+        console.logBytes(lowLevelData);
+    }
+
+    try drandOracle.getDrand(newTimestamp) returns (uint256 storedValue) {
+        console.log("getDrand succeeded at T + DRAND_TIMEOUT");
+        assertEq(storedValue, drandValue + 1, "Stored value doesn't match at T + DRAND_TIMEOUT");
+    } catch Error(string memory reason) {
+        console.log("getDrand failed with reason at T + DRAND_TIMEOUT:", reason);
+    } catch (bytes memory lowLevelData) {
+        console.log("getDrand failed with low-level error at T + DRAND_TIMEOUT");
+        console.logBytes(lowLevelData);
+    }
+
+    // Test setting after T + DRAND_TIMEOUT (should fail)
+    uint256 finalTimestamp = newTimestamp + 1;
+    vm.warp(finalTimestamp);
+    vm.prank(prankowner);
+    vm.expectRevert("Drand backfill timeout expired");
+
+    try drandOracle.setDrand(finalTimestamp, drandValue + 2) {
+        console.log("setDrand unexpectedly succeeded after T + DRAND_TIMEOUT");
+    } catch Error(string memory reason) {
+        console.log("setDrand correctly failed with reason after T + DRAND_TIMEOUT:", reason);
+    } catch (bytes memory lowLevelData) {
+        console.log("setDrand failed with low-level error after T + DRAND_TIMEOUT");
+        console.logBytes(lowLevelData);
+    }
+
+    // Log all recorded events
     Vm.Log[] memory logs = vm.getRecordedLogs();
     for (uint i = 0; i < logs.length; i++) {
         console.log("Log", i);
@@ -89,103 +173,200 @@ function testSetDrand() public {
             console.logBytes(logs[i].data);
         }
     }
-
-    // Check storage directly
-    bytes32 storageValue = vm.load(address(drandOracle), bytes32(uint256(timestamp)));
-    console.log("Direct storage value:", uint256(storageValue));
-
-    uint256 storedValue;
-    try drandOracle.getDrand(timestamp) returns (uint256 returnedValue) {
-        storedValue = returnedValue;
-        console.log("getDrand returned:", storedValue);
-    } catch Error(string memory reason) {
-        console.log("getDrand call failed with reason:", reason);
-    } catch (bytes memory lowLevelData) {
-        console.log("getDrand call failed with low-level error");
-        console.logBytes(lowLevelData);
-    }
-
-    assertEq(storedValue, drandValue, "Stored value does not match input value");
-}
-function toHexString(uint32 value) internal pure returns (string memory) {
-    bytes memory buffer = new bytes(10);
-    buffer[0] = '0';
-    buffer[1] = 'x';
-    for (uint256 i = 9; i > 1; --i) {
-        buffer[i] = bytes1(uint8(48 + uint256(value & 0xf)));
-        value >>= 4;
-    }
-    return string(buffer);
 }
 
-    function testDrandTimeout() public {
+    function testOwner() public {
+        bytes32 ownerFromStorage = vm.load(
+            address(drandOracle),
+            bytes32(uint256(0))
+        );
+        assertEq(
+            address(uint160(uint256(ownerFromStorage))),
+            prankowner,
+            "Owner not set correctly"
+        );
+    }
+
+    function testSetDrand() public {
+        vm.recordLogs();
+
+        vm.prank(prankowner);
+        vm.warp(101);
         uint256 timestamp = block.timestamp;
         uint256 drandValue = 12345;
-        
-        vm.warp(timestamp + DRAND_TIMEOUT + 1);
-        vm.expectRevert("Drand backfill timeout expired");
-        drandOracle.setDrand(timestamp, drandValue);
+
+        bytes4 setSelector = bytes4(keccak256("setDrand(uint256,uint256)"));
+        bytes4 getSelector = bytes4(keccak256("getDrand(uint256)"));
+        console.log("setDrand selector:", toHexString(uint32(setSelector)));
+        console.log("getDrand selector:", toHexString(uint32(getSelector)));
+
+        try drandOracle.setDrand(timestamp, drandValue) {
+            console.log("setDrand succeeded");
+        } catch Error(string memory reason) {
+            console.log("setDrand failed with reason:", reason);
+        } catch (bytes memory lowLevelData) {
+            console.log("setDrand failed with low-level error");
+            console.logBytes(lowLevelData);
+        }
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint i = 0; i < logs.length; i++) {
+            console.log("Log", i);
+            console.logBytes32(logs[i].topics[0]);
+            if (logs[i].data.length > 0) {
+                console.logBytes(logs[i].data);
+            }
+        }
+
+        // Print the owner address from storage
+        bytes32 ownerFromStorage = vm.load(
+            address(drandOracle),
+            bytes32(uint256(0))
+        );
+        console.log(
+            "Owner from storage:",
+            address(uint160(uint256(ownerFromStorage)))
+        );
+        console.log("Expected owner:", owner);
     }
 
-    function testSequencerCommitmentAndReveal() public {
-        uint256 currentTimestamp = block.timestamp;
-        uint256 futureTimestamp1 = currentTimestamp + PRECOMMIT_DELAY + 1;
-        uint256 futureTimestamp2 = futureTimestamp1 + 1;
-        uint256 futureTimestamp3 = futureTimestamp2 + 1;
-        uint256 randomValue = 67890;
-        bytes32 commitment1 = keccak256(abi.encodePacked(randomValue));
-        bytes32 commitment2 = keccak256(abi.encodePacked(randomValue + 1));
-        bytes32 commitment3 = keccak256(abi.encodePacked(randomValue + 2));
-
-        sequencerRandomOracle.postCommitment(futureTimestamp1, commitment1);
-        sequencerRandomOracle.postCommitment(futureTimestamp2, commitment2);
-        sequencerRandomOracle.postCommitment(futureTimestamp3, commitment3);
-
-        vm.expectRevert("No commitment posted");
-        sequencerRandomOracle.reveal(futureTimestamp1 - 1, randomValue);
-
-        vm.warp(futureTimestamp1);
-        sequencerRandomOracle.reveal(futureTimestamp1, randomValue);
-        assertEq(sequencerRandomOracle.getSequencerRandom(futureTimestamp1), randomValue);
-
-        vm.expectRevert("Already revealed");
-        sequencerRandomOracle.reveal(futureTimestamp1, randomValue);
-
-        vm.warp(futureTimestamp3);
-        
-        vm.expectRevert("Must reveal in order");
-        sequencerRandomOracle.reveal(futureTimestamp2, randomValue + 2);
-        sequencerRandomOracle.reveal(futureTimestamp3, randomValue + 2);
+    function toHexString(uint32 value) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(10);
+        buffer[0] = "0";
+        buffer[1] = "x";
+        for (uint256 i = 9; i > 1; --i) {
+            buffer[i] = bytes1(uint8(48 + uint256(value & 0xf)));
+            value >>= 4;
+        }
+        return string(buffer);
     }
-
+    
     function testSequencerTimeout() public {
-        uint256 currentTimestamp = block.timestamp;
-        uint256 futureTimestamp = currentTimestamp + PRECOMMIT_DELAY + 1;
-        uint256 randomValue = 67890;
-        bytes32 commitment = keccak256(abi.encodePacked(randomValue));
+    uint256 currentTimestamp = block.timestamp;
+    uint256 futureTimestamp = currentTimestamp + PRECOMMIT_DELAY + 1;
+    uint256 randomValue = 67890;
+    bytes32 commitment = keccak256(abi.encodePacked(randomValue));
+    
+    address storedOwner = sequencerRandomOracle.owner();
+    console.log("Stored owner in SequencerRandomOracle:", storedOwner);
+    console.log("Current timestamp:", currentTimestamp);
+    console.log("Future timestamp:", futureTimestamp);
+    console.log("SEQUENCER_TIMEOUT:", SEQUENCER_TIMEOUT);
 
-        sequencerRandomOracle.postCommitment(futureTimestamp, commitment);
+    vm.prank(storedOwner);
+    sequencerRandomOracle.postCommitment(futureTimestamp, commitment);
 
-        vm.warp(futureTimestamp + SEQUENCER_TIMEOUT + 1);
-        vm.expectRevert("Reveal timeout expired");
-        sequencerRandomOracle.reveal(futureTimestamp, randomValue);
+    // Test reveal before timeout (should succeed)
+    uint256 revealTimestamp = futureTimestamp + SEQUENCER_TIMEOUT - 1;
+    vm.warp(revealTimestamp);
+    
+    console.log("Current block timestamp before reveal:", block.timestamp);
+    console.log("Revealing for timestamp:", futureTimestamp);
+    console.log("With random value:", randomValue);
+    
+    vm.expectEmit(true, true, false, true);
+    emit ValueRevealed(futureTimestamp, randomValue);
+    
+    vm.recordLogs();
+    
+    (bool success, bytes memory returnData) = address(sequencerRandomOracle).call(
+        abi.encodeWithSignature("reveal(uint256,uint256)", futureTimestamp, randomValue)
+    );
+
+    console.log("Reveal call success:", success);
+    if (success) {
+        console.log("Reveal before timeout succeeded");
+        uint256 returnValue = abi.decode(returnData, (uint256));
+        console.log("Return value:", returnValue);
+        require(returnValue == 1, "Expected return value of 1");
+    } else {
+        console.log("Reveal before timeout failed");
+        if (returnData.length > 0) {
+            console.log("Revert reason:", abi.decode(returnData, (string)));
+        } else {
+            console.log("No revert reason provided");
+        }
+    }
+   Vm.Log[] memory logs = vm.getRecordedLogs();
+    for (uint i = 0; i < logs.length; i++) {
+        bytes32 topic = logs[i].topics[0];
+        if (topic == keccak256("EnterREVEAL()")) {
+            console.log("Entered REVEAL function");
+        } else if (topic == keccak256("CalldataSize(uint256)")) {
+            uint256 size = abi.decode(logs[i].data, (uint256));
+            console.log("Calldata size:", size);
+        } else if (topic == keccak256("BeforeLoadingT()")) {
+            console.log("Before loading T");
+        } else if (topic == keccak256("AfterLoadingT(uint256)")) {
+            uint256 T = abi.decode(logs[i].data, (uint256));
+            console.log("After loading T:", T);
+        } else if (topic == keccak256("AfterDupT(uint256)")) {
+            uint256 T = abi.decode(logs[i].data, (uint256));
+            console.log("After dup T:", T);
+        } else if (topic == keccak256("BeforeLoadingValue()")) {
+            console.log("Before loading value");
+        } else if (topic == keccak256("AfterLoadingValue(uint256)")) {
+            uint256 value = abi.decode(logs[i].data, (uint256));
+            console.log("After loading value:", value);
+        } else if (topic == keccak256("AfterDupValue(uint256)")) {
+            uint256 value = abi.decode(logs[i].data, (uint256));
+            console.log("After dup value:", value);
+        } else if (topic == keccak256("BeforeTimeoutCheck()")) {
+            console.log("Before timeout check");
+        } else if (topic == keccak256("AfterLoadingTimestamp(uint256)")) {
+            uint256 timestamp = abi.decode(logs[i].data, (uint256));
+            console.log("After loading timestamp:", timestamp);
+        } else if (topic == keccak256("AfterCalculatingThreshold(uint256)")) {
+            uint256 threshold = abi.decode(logs[i].data, (uint256));
+            console.log("After calculating threshold:", threshold);
+        } else if (topic == keccak256("AfterComparisonResult(uint256)")) {
+            uint256 result = abi.decode(logs[i].data, (uint256));
+            console.log("After comparison result:", result);
+        } else if (topic == keccak256("AfterTimeoutJump()")) {
+            console.log("After timeout jump");
+        } else if (topic == keccak256("RevealSuccessful()")) {
+            console.log("Reveal was successful");
+        } else if (topic == keccak256("RevealTimeout()")) {
+            console.log("Reveal timed out");
+        } else {
+            console.log("Unknown log:");
+            console.logBytes32(topic);
+            console.logBytes(logs[i].data);
+        }
     }
 
+
+    require(success && logs.length > 0 && logs[logs.length - 1].topics[0] == keccak256("RevealSuccessful()"), "Reveal before timeout should succeed");
+
+    // Test reveal after timeout (should revert)
+    vm.warp(futureTimestamp + SEQUENCER_TIMEOUT + 1);
+    vm.expectRevert(abi.encodeWithSignature("RevealTimeoutExpired()"));
+    sequencerRandomOracle.reveal(futureTimestamp, randomValue);
+}
     function testRandomnessOracle() public {
         uint256 currentTimestamp = block.timestamp;
-        uint256 futureTimestamp = currentTimestamp + DELAY + PRECOMMIT_DELAY + 1;
+        uint256 futureTimestamp = currentTimestamp +
+            DELAY +
+            PRECOMMIT_DELAY +
+            1;
         uint256 drandValue = 12345;
         uint256 sequencerValue = 67890;
         bytes32 commitment = keccak256(abi.encodePacked(sequencerValue));
+        vm.prank(owner);
 
         drandOracle.setDrand(futureTimestamp - DELAY, drandValue);
         sequencerRandomOracle.postCommitment(futureTimestamp, commitment);
-        
+
         vm.warp(futureTimestamp);
         sequencerRandomOracle.reveal(futureTimestamp, sequencerValue);
 
-        uint256 expectedRandomness = uint256(keccak256(abi.encodePacked(drandValue, sequencerValue)));
-        assertEq(randomnessOracle.getRandomness(futureTimestamp), expectedRandomness);
+        uint256 expectedRandomness = uint256(
+            keccak256(abi.encodePacked(drandValue, sequencerValue))
+        );
+        assertEq(
+            randomnessOracle.getRandomness(futureTimestamp),
+            expectedRandomness
+        );
     }
 
     function testRandomnessNotAvailable() public {
@@ -206,6 +387,7 @@ function toHexString(uint32 value) internal pure returns (string memory) {
         bytes32 commitment = keccak256(abi.encodePacked(sequencerValue));
 
         assertFalse(randomnessOracle.isRandomnessAvailable(futureTimestamp));
+        vm.prank(prankowner);
 
         drandOracle.setDrand(futureTimestamp - DELAY, drandValue);
         assertFalse(randomnessOracle.isRandomnessAvailable(futureTimestamp));

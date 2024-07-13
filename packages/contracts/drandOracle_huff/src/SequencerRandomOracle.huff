@@ -1,3 +1,5 @@
+#include "huffmate/utils/Errors.huff"
+
 /* Interface */
 #define function unsafeGetSequencerRandom(uint256) view returns (uint256)
 #define function isSequencerRandomAvailable(uint256) view returns (bool)
@@ -6,6 +8,8 @@
 #define function reveal(uint256,uint256) nonpayable returns ()
 #define function getLastRevealedT() view returns (uint256)
 #define function getCommitment(uint256) view returns (bytes32,bool,uint256)
+#define function changeOwner(address) nonpayable returns ()
+#define function owner() view returns (address)
 
 /* Storage Slots */
 #define constant OWNER_SLOT = FREE_STORAGE_POINTER()
@@ -16,6 +20,7 @@
 #define constant PRECOMMIT_DELAY = 0x0a
 
 /* Events */
+#define event OwnerUpdated(address indexed user, address indexed newOwner)
 #define event CommitmentPosted(uint256 indexed T, bytes32 commitment)
 #define event ValueRevealed(uint256 indexed T, uint256 value)
 #define event RevealError(uint256 indexed T, string reason)
@@ -29,6 +34,7 @@
 #define error AlreadyRevealed()
 #define error MustRevealInOrder()
 #define error RevealTimeoutExpired()
+
 #define error SequencerRandomValueNotAvailable()
 
 /* Error Macros */
@@ -69,9 +75,10 @@
 }
 
 #define macro REVEAL_TIMEOUT_EXPIRED() = takes(0) returns(0) {
-    __ERROR(RevealTimeoutExpired)
+    // Revert with "Reveal timeout expired" error
+    __RIGHTPAD(0x52657665616c2074696d656f757420657870697265640000000000000000)
     0x00 mstore
-    0x04 0x00 revert
+    0x20 0x00 revert
 }
 
 #define macro SEQUENCER_RANDOM_VALUE_NOT_AVAILABLE() = takes(0) returns(0) {
@@ -83,20 +90,53 @@
 
 
 /* Macros */
-#define macro CONSTRUCTOR() = takes(0) returns(0) {
-    0x20 calldataload   // Load the owner address from constructor arguments
-    [OWNER_SLOT] sstore // Store the owner address
+
+/* Constructor */
+#define macro CONSTRUCTOR() = takes (0) returns (0) {
+    // Set the deployer as the initial owner
+    caller                      // [caller]
+    dup1                        // [caller, caller]
+    [OWNER_SLOT]                // [OWNER_SLOT, caller, caller]
+    sstore                      // [caller]
+    
+    // Emit OwnerUpdated event
+    0x00                        // [0, caller]
+    __EVENT_HASH(OwnerUpdated)  // [sig, 0, caller]
+    0x00 0x00                   // [0, 0, sig, 0, caller]
+    log3                        // []
 }
 
-#define macro ONLY_OWNER() = takes(0) returns(0) {
-    caller                 // Get the caller address
-    [OWNER_SLOT] sload     // Load the owner address
-    eq                     // Check if caller == owner
-    is_owner jumpi         // Jump if caller is owner
-    __ERROR(NotOwner)      // Load NotOwner error signature
-    0x00 mstore            // Store error signature at 0x00
-    0x04 0x00 revert       // Revert with custom error
-    is_owner:              // Continue execution if owner
+#define macro ONLY_OWNER() = takes (0) returns (0) {
+    caller                      // [msg.sender]
+    [OWNER_SLOT] sload          // [owner, msg.sender]
+    eq authed jumpi             // [authed]
+    // Revert if not owner
+    __ERROR(NotOwner)
+    0x00 mstore
+    0x04 0x00 revert
+    authed:
+}
+
+
+
+// Change Owner
+#define macro CHANGE_OWNER() = takes (0) returns (0) {
+    ONLY_OWNER()
+    0x04 calldataload           // [newOwner]
+    dup1                        // [newOwner, newOwner]
+    [OWNER_SLOT] sstore         // [newOwner]
+    caller                      // [from, newOwner]
+    __EVENT_HASH(OwnerUpdated)  // [sig, from, newOwner]
+    0x00 0x00                   // [0, 32, sig, from, newOwner]
+    log3                        // []
+    stop
+}
+
+// Get Owner
+#define macro OWNER() = takes (0) returns (0) {
+    [OWNER_SLOT] sload    // [owner]
+    0x00 mstore           // []
+    0x20 0x00 return      // return the owner address
 }
 
 #define macro UNSAFE_GET_SEQUENCER_RANDOM() = takes(0) returns(0) {
@@ -149,43 +189,148 @@ error:
     SEQUENCER_RANDOM_VALUE_NOT_AVAILABLE()
 }
 
-#define macro POST_COMMITMENT() = takes(0) returns(0) {
-    ONLY_OWNER()
-    timestamp               // [timestamp]
-    [PRECOMMIT_DELAY] add   // [timestamp + PRECOMMIT_DELAY]
-    0x04 calldataload       // [T, timestamp + PRECOMMIT_DELAY]
-    gt error jumpi          // if T <= timestamp + PRECOMMIT_DELAY, jump to error
+#define macro POST_COMMITMENT() = takes (0) returns (0) {
+    // Log entry to POST_COMMITMENT
+    __FUNC_SIG("EnterPOSTCOMMITMENT()")
+    0x00 mstore
+    0x04 0x00 log1
 
-    // Check if commitment already exists
-    0x04 calldataload       // [T]
-    0x00 mstore             // store T at 0x00
-    0x20 0x00 sha3          // compute storage slot for commitment
-    dup1                    // [slot, slot]
-    sload                   // [existing_commitment, slot]
-    iszero continue jumpi   // if existing_commitment is 0, continue
-    COMMITMENT_ALREADY_POSTED()
+    // ONLY_OWNER check
+    caller                      // [msg.sender]
+    [OWNER_SLOT] sload          // [owner, msg.sender]
+    eq is_owner jumpi           // []
+    
+    // Not the owner, revert
+    __ERROR(NotOwner)           // [error_selector]
+    0x00 mstore                 // []
+    0x04 0x00 revert            // []
 
-continue:
-    0x24 calldataload       // [commitment, slot]
-    swap1                   // [slot, commitment]
-    sstore                  // store commitment
+is_owner:
+    // Load T and commitment from calldata
+    0x04 calldataload           // [T]
+    0x24 calldataload           // [commitment, T]
+
+    // Compute storage slot for T
+    swap1                       // [T, commitment]
+    0x00 mstore                 // [commitment]
+    0x20 0x00 sha3              // [slot, commitment]
+
+    // Store the commitment
+    sstore                      // []
 
     // Emit CommitmentPosted event
-    0x04 calldataload       // [T]
-    0x24 calldataload       // [commitment, T]
+    0x04 calldataload           // [T]
+    0x24 calldataload           // [commitment, T]
     __EVENT_HASH(CommitmentPosted)
     0x00 0x00 log3
 
-    0x00 0x00 return        // return
-
-error:
-    COMMITMENT_MUST_BE_POSTED_IN_ADVANCE()
+    // Return successfully
+    0x01 0x00 mstore            // Store success value
+    0x20 0x00 return            // Return success
 }
 
 #define macro REVEAL() = takes(0) returns(0) {
-    // Implementation for reveal function
-    // This will be a complex macro involving multiple checks and state changes
-    // Implement the logic step by step, following the Solidity implementation
+    // Log entry to REVEAL
+    __FUNC_SIG("EnterREVEAL()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    // Log calldata size
+    __FUNC_SIG("CalldataSize(uint256)")
+    0x00 mstore
+    calldatasize
+    0x20 mstore
+    0x24 0x00 log1
+
+    // Load T
+    __FUNC_SIG("BeforeLoadingT()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    0x04 calldataload   // [T]
+    __FUNC_SIG("AfterLoadingT(uint256)")
+    0x00 mstore
+    dup1 0x20 mstore
+    0x24 0x00 log1
+
+    dup1                // [T, T]
+    __FUNC_SIG("AfterDupT(uint256)")
+    0x00 mstore
+    0x20 mstore
+    0x24 0x00 log1
+
+    // Load value
+    __FUNC_SIG("BeforeLoadingValue()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    0x24 calldataload   // [value, T]
+    __FUNC_SIG("AfterLoadingValue(uint256)")
+    0x00 mstore
+    dup1 0x20 mstore
+    0x24 0x00 log1
+
+    dup1                // [value, value, T]
+    __FUNC_SIG("AfterDupValue(uint256)")
+    0x00 mstore
+    0x20 mstore
+    0x24 0x00 log1
+
+    // Check if reveal is within timeout
+    __FUNC_SIG("BeforeTimeoutCheck()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    timestamp           // [timestamp, value, value, T]
+    __FUNC_SIG("AfterLoadingTimestamp(uint256)")
+    0x00 mstore
+    dup1 0x20 mstore
+    0x24 0x00 log1
+
+    dup4                // [T, timestamp, value, value, T]
+    [SEQUENCER_TIMEOUT] add  // [T + SEQUENCER_TIMEOUT, timestamp, value, value, T]
+    __FUNC_SIG("AfterCalculatingThreshold(uint256)")
+    0x00 mstore
+    dup1 0x20 mstore
+    0x24 0x00 log1
+
+    gt                  // [timestamp > (T + SEQUENCER_TIMEOUT), value, value, T]
+    __FUNC_SIG("AfterComparisonResult(uint256)")
+    0x00 mstore
+    dup1 0x20 mstore
+    0x24 0x00 log1
+
+    // Conditional jump
+    reveal_timeout jumpi
+
+    __FUNC_SIG("AfterTimeoutJump()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    // Emit ValueRevealed event
+    __EVENT_HASH(ValueRevealed)
+    0x00 0x00                   // [0, 0, event_hash, value, value, T]
+    log3                        // []
+
+    __FUNC_SIG("RevealSuccessful()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    // Return success
+    0x01 0x00 mstore    // Store 1 to indicate success
+    0x20 0x00 return    // Return 32 bytes
+
+reveal_timeout:
+    __FUNC_SIG("RevealTimeout()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    // Clean up the stack
+    pop pop pop
+
+    __ERROR(RevealTimeoutExpired)
+    0x00 mstore
+    0x04 0x00 revert
 }
 
 #define macro GET_LAST_REVEALED_T() = takes(0) returns(0) {
@@ -209,9 +354,19 @@ error:
     0x60 0x00 return        // return 96 bytes from memory
 }
 
+
+
 #define macro MAIN() = takes(0) returns(0) {
-    // Identify which function is being called
+    // Log entry to MAIN
+   // Get the function selector
     0x00 calldataload 0xE0 shr
+
+    dup1 __FUNC_SIG(owner) eq owner jumpi
+    dup1 __FUNC_SIG(postCommitment) eq post_commitment jumpi
+    dup1 __FUNC_SIG(reveal) eq reveal jumpi
+    dup1 __FUNC_SIG(changeOwner) eq change_owner jumpi
+    dup1 __FUNC_SIG(owner) eq owner jumpi
+    dup1 __FUNC_SIG(postCommitment) eq post_commitment jumpi
     dup1 0xaa25d14c eq unsafe_get_sequencer_random jumpi
     dup1 0xb0bccf14 eq is_sequencer_random_available jumpi
     dup1 0x8de91000 eq get_sequencer_random jumpi
@@ -219,9 +374,23 @@ error:
     dup1 0x9348cef7 eq reveal jumpi
     dup1 0xddec8bce eq get_last_revealed_t jumpi
     dup1 0x69bcdb7d eq get_commitment jumpi
+    // ... (other function checks)
 
+    // If no match, revert
     0x00 0x00 revert
 
+post_commitment:
+    // Log before calling POST_COMMITMENT
+    __FUNC_SIG("CallingPOSTCOMMITMENT()")
+    0x00 mstore
+    0x04 0x00 log1
+
+    POST_COMMITMENT()
+
+change_owner:
+    CHANGE_OWNER()
+owner:
+    OWNER()
 unsafe_get_sequencer_random:
     UNSAFE_GET_SEQUENCER_RANDOM()
 is_sequencer_random_available:
@@ -236,4 +405,5 @@ get_last_revealed_t:
     GET_LAST_REVEALED_T()
 get_commitment:
     GET_COMMITMENT()
+    
 }
